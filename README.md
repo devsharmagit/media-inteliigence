@@ -1,0 +1,269 @@
+# Media Intelligence Graph Pipeline
+
+A pipeline that scrapes real web content, extracts entities and relationships, stores them as a graph, and exposes queryable API endpoints for analysts.
+
+---
+
+## What This Project Does
+
+1. **Crawls** news sites, Reddit, and a third source using `crawl4ai`
+2. **Normalises** raw HTML/threads into a common schema
+3. **Extracts** named entities (people, orgs, locations) and the typed relationships between them
+4. **Stores** everything as a node-edge graph in SQLite — with full source provenance
+5. **Exposes** a FastAPI server to query networks, spot emerging connections, and rank influence
+
+---
+
+## Project Structure
+
+```
+media-intelligence/
+│
+├── config/
+│   └── sources.yaml          # Seed URLs, depth, domain whitelist — edit this, never touch code
+│
+├── crawler/
+│   ├── scraper.py            # crawl4ai-based multi-source crawler
+│   └── normaliser.py         # Converts raw content → common schema
+│
+├── extractor/
+│   ├── entities.py           # spaCy NER + entity normalisation
+│   ├── relationships.py      # Typed edge extraction using dependency parsing
+│   └── aliases.py            # Alias map: "Musk" → "Elon Musk"
+│
+├── storage/
+│   ├── schema.sql            # SQLite schema (nodes, edges, sources, content)
+│   └── db.py                 # DB read/write helpers
+│
+├── api/
+│   └── main.py               # FastAPI app with all endpoints
+│
+├── run_pipeline.py           # Entry point: crawl → extract → store
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Quickstart
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+
+# 2. Configure your seed URLs
+nano config/sources.yaml
+
+# 3. Run the full pipeline
+python run_pipeline.py
+
+# 4. Start the API
+uvicorn api.main:app --reload
+```
+
+---
+
+## Configuration (`config/sources.yaml`)
+
+```yaml
+crawl:
+  depth: 2
+  domain_whitelist:
+    - reuters.com
+    - reddit.com
+    - news.ycombinator.com
+
+sources:
+  - url: "https://www.reuters.com/technology/"
+    type: "news"
+  - url: "https://www.reddit.com/r/worldnews/.json"
+    type: "social"
+  - url: "https://news.ycombinator.com/"
+    type: "forum"
+```
+
+> **Never hardcode URLs in Python files.** All seed URLs live here. The evaluator will swap this file and re-run.
+
+---
+
+## Database Schema
+
+```sql
+-- Entities as graph nodes
+CREATE TABLE nodes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE,      -- normalised canonical name
+    type        TEXT NOT NULL,             -- PERSON | ORG | LOCATION | TOPIC
+    first_seen  TEXT NOT NULL,             -- ISO timestamp
+    mention_count INTEGER DEFAULT 1
+);
+
+-- Relationships as typed edges
+CREATE TABLE edges (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_node   INTEGER REFERENCES nodes(id),
+    target_node   INTEGER REFERENCES nodes(id),
+    relation_type TEXT NOT NULL,           -- affiliated_with | accused_of | quoted_by | etc.
+    weight        INTEGER DEFAULT 1,       -- how many times this edge appeared
+    first_seen    TEXT NOT NULL,
+    last_seen     TEXT NOT NULL
+);
+
+-- Raw scraped content
+CREATE TABLE content (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_url    TEXT NOT NULL,
+    source_type   TEXT NOT NULL,           -- news | social | forum
+    scraped_at    TEXT NOT NULL,
+    title         TEXT,
+    body          TEXT,
+    author        TEXT,
+    published_at  TEXT
+);
+
+-- Links edges back to the content they came from
+CREATE TABLE edge_sources (
+    edge_id       INTEGER REFERENCES edges(id),
+    content_id    INTEGER REFERENCES content(id)
+);
+```
+
+---
+
+## API Endpoints
+
+### `GET /entity/{name}/network`
+Returns depth-1 and depth-2 connections for an entity, structured for graph rendering.
+
+**Example:** `GET /entity/Elon Musk/network`
+
+```json
+{
+  "center": { "name": "Elon Musk", "type": "PERSON" },
+  "nodes": [ ... ],
+  "edges": [
+    { "from": "Elon Musk", "to": "SEC", "relation": "accused_of", "weight": 4 }
+  ]
+}
+```
+
+---
+
+### `GET /connections/new?since=<ISO_TIMESTAMP>`
+Returns edges that are new or whose weight grew significantly since the given timestamp.
+
+**"Grown significantly" definition:**
+> An edge is flagged if its weight has increased by more than **2× its average daily rate** in the period before `since`. New edges (first seen after `since`) are always included.
+
+This is a deliberate threshold — it catches genuine spikes while ignoring slow accumulation. It will miss gradual build-ups and can false-positive on edges with very low base frequency.
+
+**Example:** `GET /connections/new?since=2025-01-01T00:00:00Z`
+
+---
+
+### `GET /entities/central`
+Ranks entities by a composite centrality score.
+
+**Metric used:**
+```
+score = (degree × 0.5) + (unique_relation_types × 0.3) + (betweenness_proxy × 0.2)
+```
+- **Degree** — how many direct connections
+- **Unique relation types** — diversity of connection types (not just volume)
+- **Betweenness proxy** — how often an entity bridges two otherwise unconnected entities
+
+This is not PageRank. It's simpler, explainable, and faster on SQLite. What it misses: it doesn't account for the importance of the nodes it connects to.
+
+---
+
+## Entity Normalisation Strategy
+
+The same real-world entity appears in many forms across sources. We resolve them to a single canonical node using three layers:
+
+1. **Alias map** (`extractor/aliases.py`) — handcrafted rules: `"Musk" → "Elon Musk"`, `"@elonmusk" → "Elon Musk"`
+2. **Fuzzy matching** (`rapidfuzz`) — catches near-duplicates like `"Elon  Musk"` (double space)
+3. **Title normalisation** — strips prefixes: `"President Biden"` → `"Joe Biden"` using a lookup
+
+**Where this breaks:** Ambiguous single names like `"Johnson"` — is it Boris Johnson or someone else? We default to the most-mentioned entity with that surname in the current crawl window. This is wrong when a new person with the same surname enters the news. A real example from the scraped data is in the README answers below.
+
+---
+
+## Relationship Types
+
+| Relation | How detected | Example |
+|---|---|---|
+| `quoted_by` | `"X said/stated/claimed"` pattern | `SEC --[quoted_by]--> Reuters` |
+| `accused_of` | `"X accused/charged/sued Y"` | `FTC --[accused_of]--> Meta` |
+| `affiliated_with` | `"X CEO/founder/member of Y"` | `Musk --[affiliated_with]--> Tesla` |
+| `responded_to` | Reply thread structure | `User A --[responded_to]--> User B` |
+| `mentioned_with` | Co-occurrence fallback | `X --[mentioned_with]--> Y` |
+
+Co-occurrence is the fallback only. We attempt typed extraction first using spaCy's dependency parser — looking at the verb connecting two entity spans.
+
+---
+
+## The Hard Questions (Phase 4)
+
+### A real relationship your system extracted — is it correct?
+
+> _Fill this in after your first real crawl run. Example format:_
+> "The system extracted `[FTC] --[accused_of]--> [Meta]` from a Reuters article dated X. This is correct — the article describes the FTC filing an antitrust case against Meta. The relation was detected because the verb 'accused' appeared between the two entity spans in spaCy's dependency tree."
+
+### How does entity normalisation break? Concrete example.
+
+> _Fill this in after crawl. Example format:_
+> "The name 'Johnson' appeared 14 times in the crawl. 11 referred to Boris Johnson and 3 referred to a local politician. Our system collapsed all 14 to 'Boris Johnson' because he was the dominant match. Those 3 edges are wrong."
+
+### How would you detect and suppress spurious edges at scale?
+
+Two approaches we'd implement first:
+1. **Minimum weight threshold** — edges with weight=1 from a single source are flagged as unverified. Only edges seen in 2+ independent sources get promoted to the main graph.
+2. **Source diversity check** — an edge that only comes from one domain (e.g. one Reddit thread) is suspect. Real connections should appear across source types.
+
+What this misses: a genuinely new story might be single-source for hours. There's a tradeoff between freshness and reliability.
+
+### SQLite → Neo4j: what gets easier and what do you lose?
+
+**Easier:**
+- Depth-N traversal without recursive CTEs — Cypher makes this one line
+- Variable-length path queries (`MATCH (a)-[*2..4]->(b)`)
+- Native graph algorithms (PageRank, community detection) via GDS plugin
+
+**Lose:**
+- Simplicity — SQLite is a single file, zero infra
+- SQL familiarity — every analyst knows SQL, few know Cypher
+- Portability — SQLite runs anywhere, Neo4j needs a server
+
+### What would it take to run this continuously?
+
+Three things need to change:
+1. **Scheduler** — replace `run_pipeline.py` as a one-shot script with APScheduler or Celery Beat running every N minutes
+2. **Deduplication** — content must be fingerprinted (hash of URL + published_at) so we don't re-extract the same article
+3. **Incremental edge updates** — instead of INSERT, use INSERT OR REPLACE with weight += 1 and last_seen = now()
+
+The hard part is entity drift — a canonical name that was correct last week might be wrong today if a new person with the same name becomes newsworthy.
+
+---
+
+## Known Limitations
+
+- Entity normalisation fails on ambiguous single-token names
+- Relationship extraction accuracy drops on non-English content
+- `mentioned_with` edges will dominate the graph numerically — filter by relation type in queries
+- The centrality metric doesn't account for node quality, only quantity
+
+---
+
+## Requirements
+
+```
+crawl4ai
+spacy
+rapidfuzz
+fastapi
+uvicorn
+sqlite3  # stdlib
+pyyaml
+httpx
+```
