@@ -1,0 +1,15 @@
+crawl:
+  depth: 2
+  max_pages_per_source: 20   # hard cap per source — prevents BFS explosion
+  domain_whitelist:
+    - reuters.com
+    - reddit.com
+    - news.ycombinator.com
+
+sources:
+  - url: "https://www.reuters.com/technology/"
+    type: "news"
+  - url: "https://www.reddit.com/r/worldnews/.json"
+    type: "social"
+  - url: "https://news.ycombinator.com/"
+    type: "forum"
