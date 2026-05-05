@@ -1,15 +1,17 @@
 crawl:
   depth: 2
-  max_pages_per_source: 20   # hard cap per source — prevents BFS explosion
+  max_pages_per_source: 20   # hard cap per source
   domain_whitelist:
     - reuters.com
     - reddit.com
     - news.ycombinator.com
+    - techcrunch.com         # <-- Add new domains here
+    - bbc.com                # <-- Add new domains here
 
 sources:
-  - url: "https://www.reuters.com/technology/"
+  - url: "https://techcrunch.com/category/artificial-intelligence/"
     type: "news"
-  - url: "https://www.reddit.com/r/worldnews/.json"
-    type: "social"
+  - url: "https://www.bbc.com/news/world"
+    type: "news"
   - url: "https://news.ycombinator.com/"
     type: "forum"

@@ -86,33 +86,52 @@ uvicorn api.main:app --reload
 
 ## Real Data Example
 
-**From a recent crawl (May 3, 2026):**
+**From a recent crawl (May 5, 2026):**
 
 ```
-Sources crawled:     3 (Reddit /r/worldnews, Hacker News, Reuters)
-Content collected:   39 articles/posts
-Entities extracted:  1,840 raw mentions
-Unique nodes:        729 entities (after normalization)
-Relationships:       965 edges
-Processing time:     ~30 seconds
+Sources crawled:     3 (TechCrunch AI, BBC World News, Hacker News)
+Content collected:   60 articles/posts
+Entities extracted:  5,854 raw mentions
+Unique nodes:        1,822 entities (after normalization)
+Relationships:       7,349 extracted
+Unique edges:        3,900 edges
+Processing time:     ~55 seconds
 ```
 
 **Top entities by mention count:**
-- Microsoft (94 mentions)
-- Haskell (89 mentions)
-- Linux (66 mentions)
-- Apple (49 mentions)
-- AI (44 mentions)
+- AI (256 mentions)
+- BBC (192 mentions)
+- United States (179 mentions)
+- TechCrunch (120 mentions)
+- Zig (89 mentions)
+- Iran (75 mentions)
+- LLM (61 mentions)
+- OpenAI (60 mentions)
+- Amazon (59 mentions)
+- Julie Bort (53 mentions)
+
+**Entity type distribution:**
+- Organizations: 847 (46.5%)
+- People: 720 (39.5%)
+- Locations (GPE): 255 (14.0%)
+
+**Relationship type distribution:**
+- `mentioned_with`: 3,386 (86.8%) — co-occurrence fallback
+- `affiliated_with`: 375 (9.6%) — typed relationship
+- `quoted_by`: 126 (3.2%) — typed relationship
+- `accused_of`: 7 (0.2%) — typed relationship
+- `responded_to`: 6 (0.2%) — typed relationship
 
 **Sample relationships:**
-- `[Ukraine] --[affiliated_with]--> [Zelenskyy]` — from Reddit post about Ukrainian politics
-- `[Windows] --[mentioned_with]--> [Linux]` (weight: 16) — from HN discussions
-- `[Microsoft] --[mentioned_with]--> [Windows]` (weight: 10) — co-occurrence in tech articles
+- `[Iran] --[mentioned_with]--> [United States]` (weight: 38) — from BBC news coverage
+- `[OpenAI] --[mentioned_with]--> [AI]` (weight: 14) — from TechCrunch articles
+- `[Skio] --[affiliated_with]--> [OpenAI]` (weight: 15) — from tech news
+- `[AI] --[mentioned_with]--> [Nvidia]` (weight: 7) — from HN discussions
 
 **API query example:**
 ```bash
-curl http://localhost:8000/entity/Ukraine/network
-# Returns 15 nodes, 23 edges showing Ukraine's connections to EU, Zelenskyy, etc.
+curl http://localhost:8000/entity/AI/network?depth=1
+# Returns 159 nodes, 189 edges showing AI's connections to OpenAI, Nvidia, etc.
 ```
 
 ---
@@ -258,101 +277,132 @@ Co-occurrence is the fallback only. We attempt typed extraction first using spaC
 
 ### A real relationship your system extracted — is it correct?
 
-**Example from actual crawl (May 3, 2026):**
+**Example from actual crawl (May 5, 2026):**
 
-The system extracted `[Ukraine] --[affiliated_with]--> [Zelenskyy]` from a Reddit post titled "Ukraine's President Zelenskyy says Slovak Prime Minister Fico changed his view on Ukraine's EU accession."
+The system extracted `[Iran] --[mentioned_with]--> [United States]` (weight: 38) from BBC news coverage. This edge has **7 source content links**, meaning it appeared across multiple BBC articles about Iran-US relations.
 
-**Is it correct?** Yes. The article explicitly describes Zelenskyy as "Ukraine's President," which matches our `affiliated_with` pattern (detecting titles like "President," "CEO," "founder"). The relation was detected because spaCy identified "President" as a title connecting the two entity spans.
+**Is it correct?** Yes. This is a legitimate co-occurrence pattern reflecting real news coverage. The high weight (38) indicates this is a significant ongoing story, not a spurious connection.
 
 **Additional examples:**
-- `[Ukraine] --[affiliated_with]--> [EU]` (weight: 2) — Correct, from multiple posts about Ukraine's EU accession
-- `[Windows] --[mentioned_with]--> [Linux]` (weight: 16) — Correct co-occurrence from Hacker News discussions comparing operating systems
-- `[Haskell] --[quoted_by]--> [Java]` (weight: 1) — Detected from a discussion where someone quoted a comparison
+- `[AI] --[mentioned_with]--> [OpenAI]` (weight: 14) — Correct, from TechCrunch AI category articles
+- `[Skio] --[affiliated_with]--> [OpenAI]` (weight: 15) — Detected from tech news mentioning company affiliations
+- `[OpenAI] --[mentioned_with]--> [Amazon]` (weight: 20) — Correct co-occurrence from multiple articles
+- `[Julie Bort] --[mentioned_with]--> [Tim Fernholz]` (weight: 20) — Authors appearing together in bylines
 
-**Example of incorrect typed relationship:**
+**Example of incorrect entity classification:**
 
-The system extracted `[macOS] --[affiliated_with]--> [AI]` (weight: 4). This is **wrong**. An operating system cannot be "affiliated with" a concept. This happened because our `affiliated_with` pattern triggered on text like "macOS AI features" where "AI" appears near "macOS" with certain connecting words, but the pattern doesn't validate semantic plausibility. The correct relation should be `mentioned_with`.
+The entity "Zig" appeared 89 times and was classified as **GPE (location)** instead of a programming language. This happened because:
+1. spaCy's NER model doesn't have a category for programming languages
+2. Without a "TECHNOLOGY" entity type, it defaulted to GPE based on capitalization patterns
+3. The context (Hacker News discussions) wasn't enough to override the statistical model
 
-This reveals a fundamental limitation: our typed extraction uses syntactic patterns (verb triggers between entity spans) without semantic validation. We detect "X [title/verb] Y" structures, but don't verify whether that relationship type makes sense for the entity types involved.
+**Impact:** Any edges involving "Zig" have incorrect entity type metadata, though the relationships themselves may be valid (e.g., `[Zig] --[mentioned_with]--> [Rust]` is a real technology comparison).
 
-**Edge provenance:** Every edge links back to its source content via the `edge_sources` table, allowing verification of extraction accuracy.
+**Example of navigation chrome noise:**
+
+The system extracted entities like "Close TechCrunch Desktop Logo" and "Apps Biotech & Health Climate" from TechCrunch navigation elements. These appear in relationships like:
+- `[Close TechCrunch Desktop Logo] --[mentioned_with]--> [TechCrunch]` (weight: 19)
+
+These are spurious edges from website chrome, not real content relationships.
+
+**Edge provenance:** Every edge links back to its source content via the `edge_sources` table. For example, the Iran-United States edge can be traced to specific BBC articles, allowing verification of extraction accuracy.
 
 ### How does entity normalisation break? Concrete example.
 
-**Example from actual crawl:**
+**Example from actual crawl (May 5, 2026):**
 
-The entity "Apple" appeared 49 times and was correctly identified as an organization (Apple Inc.). However, "Apple Maps" was also extracted as a separate entity and appeared in relations like `[Apple] --[quoted_by]--> [Apple Maps]` and `[Apple Maps] --[quoted_by]--> [Apple]`.
-
-**The problem:** These should be normalized differently:
-- "Apple" (the company) and "Apple Maps" (the product) are distinct entities
-- But our system created bidirectional `quoted_by` relations between them, which doesn't make semantic sense
-- The correct relation would be `[Apple] --[owns/produces]--> [Apple Maps]`
-
-**Another example:** "C++" was classified as a PERSON (14 mentions) instead of a programming language. This happened because:
+The entity "Zig" appeared **89 times** and was classified as **GPE (geopolitical entity/location)** instead of a programming language. This happened because:
 1. spaCy's NER model doesn't have a category for programming languages
-2. The "++" characters confused the entity boundary detection
-3. Without a "TECHNOLOGY" entity type, it defaulted to PERSON
+2. The capitalized single-word pattern matches location heuristics
+3. Without a "TECHNOLOGY" entity type, it defaulted to GPE
 
-**Impact:** Any edges involving "C++" are semantically incorrect because the entity type is wrong. For example, `[C++] --[mentioned_with]--> [Rust]` should be a technology comparison, not a person-organization relationship.
+**Impact:** Any edges involving "Zig" have incorrect entity type metadata. For example, `[Zig] --[mentioned_with]--> [Rust]` should be a technology comparison, not a location-organization relationship.
+
+**Another example:** "LLM" appeared 61 times and was classified as **ORG** instead of a concept/technology. While this is less wrong than Zig's classification, it still creates semantic confusion in relationships.
+
+**Navigation chrome pollution:**
+
+Entities like these were extracted from website navigation elements:
+- "Close TechCrunch Desktop Logo" (18 mentions)
+- "Apps Biotech & Health Climate" (18 mentions)
+- "Media & Entertainment Meta Microsoft Privacy Robotics Security Social Space Startups" (18 mentions)
+
+These appear in spurious relationships like:
+- `[Close TechCrunch Desktop Logo] --[mentioned_with]--> [TechCrunch]` (weight: 19)
+
+**The problem:** These aren't real entities — they're concatenated navigation menu items that spaCy's NER incorrectly identified as organizations.
+
+**BBC language menu pollution:**
+
+The BBC website's language selector created many spurious entities:
+- "Afaan Oromootiin Amharic" (28 mentions)
+- "Gaelic NAIDHEACHDAN Gujarati ગુજરાતીમાં" (28 mentions)
+- "Kirundi KIRUNDI" (28 mentions)
+- "Kyrgyz Кыргыз" (28 mentions)
+- "Nepali नेपाली Noticias" (28 mentions)
+
+All with high-weight edges to "BBC" because they appear on every BBC page.
 
 **What we'd fix:**
-1. Add custom entity types (TECHNOLOGY, PRODUCT, CONCEPT)
-2. Implement domain-specific NER training for tech entities
-3. Add post-processing rules: if entity matches `^[A-Z][a-z]*\+\+$`, classify as TECHNOLOGY
+1. **Pre-processing filter**: Strip common navigation patterns before entity extraction
+2. **Entity length validation**: Reject entities longer than N words (e.g., 5) as likely concatenated text
+3. **Custom entity types**: Add TECHNOLOGY, PRODUCT, CONCEPT categories
+4. **Domain-specific stoplist**: Filter known navigation terms (Close, Logo, Menu, etc.)
+5. **Post-processing validation**: Check if entity appears in a known list of programming languages, frameworks, etc.
 
-**Additional failure modes discovered in production:**
-
-- **Markdown artifacts**: `"| hacker_homie"` was extracted as an entity name because HN comments use pipe characters for formatting, and spaCy's NER doesn't filter markup characters
-- **Merged entities**: `"Bun/Anthropic"` appears as a single node when it should be two separate entities. This happens when entities are mentioned together with a slash in context like "Bun (by Anthropic)" or comparison lists
-- **Measurement units as entities**: `"GB"` (gigabytes) was classified as a GPE (geopolitical entity) because it's capitalized and appears in contexts like "16GB RAM" where spaCy's statistical model misclassifies it
-- **Domain-specific acronyms**: `"TLDR"`, `"FIRE"`, `"RSU"` appear as entity nodes but carry no semantic value. These are community jargon (HN, Reddit finance discussions) that pass entity extraction but shouldn't be graph nodes
-
-**What would fix this:** A post-processing entity filter that:
-1. Strips leading non-alphanumeric characters (`"| hacker_homie"` → `"hacker_homie"`)
-2. Splits slash-separated entities (`"Bun/Anthropic"` → two nodes)
-3. Maintains a stoplist of measurement units and common acronyms
-4. Validates entity type makes sense (e.g., reject ORG entities that are single letters/numbers)
+**What this reveals:** Entity normalization is only as good as the input quality. Scraped web content includes navigation chrome, and without content-aware filtering, the graph gets polluted with spurious nodes.
 
 ### How would you detect and suppress spurious edges at scale?
 
-**Real examples from our crawl:**
+**Real examples from our crawl (May 5, 2026):**
 
-The most common edge in our graph is `[FAQ] --[mentioned_with]--> [API]` (weight: 38). Note: weights increase with each crawl run; this reflects cumulative counts across multiple pipeline executions. This appears because Hacker News pages contain navigation elements with "FAQ," "API," "Apply," and "Contact" links. These aren't real relationships — they're website chrome. This weight grew from 18 to 38 across two pipeline runs, demonstrating that navigation chrome accumulates faster than real content relationships.
+The most common edge in our graph is `[Iran] --[mentioned_with]--> [United States]` (weight: 38). This is a **legitimate** relationship from BBC news coverage. However, we also have spurious edges like:
 
-**The problem:** Co-occurrence edges dominate numerically. Out of 729 edges:
-- ~90% are `mentioned_with` (co-occurrence fallback)
-- ~10% are typed relations (`affiliated_with`, `quoted_by`, etc.)
+- `[BBC] --[mentioned_with]--> [Afaan Oromootiin Amharic]` (weight: 28) — BBC language menu
+- `[BBC] --[mentioned_with]--> [Gaelic NAIDHEACHDAN Gujarati ગુજરાતીમાં]` (weight: 28) — BBC language menu
+- `[Close TechCrunch Desktop Logo] --[mentioned_with]--> [TechCrunch]` (weight: 19) — Navigation chrome
 
-**Two approaches we'd implement:**
+**The problem:** Co-occurrence edges dominate numerically. Out of 3,900 edges:
+- **86.8%** are `mentioned_with` (co-occurrence fallback)
+- **13.2%** are typed relations (`affiliated_with`, `quoted_by`, `accused_of`, `responded_to`)
 
-1. **Minimum weight threshold** — Edges with weight=1 from a single source are flagged as unverified. Only edges seen in 2+ independent sources get promoted to the main graph.
+**Four approaches we'd implement:**
+
+1. **Minimum weight threshold with source diversity** — Edges with weight=1 from a single source are flagged as unverified. Only edges seen in 2+ independent sources or with weight ≥3 from a single authoritative source get promoted.
    
-   **Example:** `[Ukraine] --[affiliated_with]--> [EU]` has weight=2 from multiple Reddit posts → **Keep**
-   
-   `[Dioxus] --[affiliated_with]--> [Skia]` has weight=1 from one HN comment → **Flag as unverified**
+   **Example from our data:**
+   - `[Iran] --[mentioned_with]--> [United States]` (weight: 38, 7 sources) → **Keep**
+   - `[OpenAI] --[mentioned_with]--> [Amazon]` (weight: 20, multiple sources) → **Keep**
+   - Single-occurrence edges (weight: 1, 1 source) → **Flag as unverified**
 
-2. **Source diversity check** — An edge that only comes from one domain (e.g., one Reddit thread) is suspect. Real connections should appear across source types.
+2. **Entity pattern filtering** — Reject edges where either entity matches known noise patterns:
+   - Contains "Logo", "Menu", "Close", "Desktop" → Navigation chrome
+   - Longer than 5 words → Likely concatenated text
+   - Contains multiple language scripts → Language selector
+   - All caps with spaces (e.g., "KIRUNDI") → Menu item
    
-   **Example:** `[Windows] --[mentioned_with]--> [Linux]` appears in both Reddit and Hacker News → **Keep**
-   
-   `[FAQ] --[mentioned_with]--> [API]` only appears in HN navigation → **Suppress as chrome**
+   **Impact on our data:** Would eliminate ~200+ spurious edges from BBC language menus and TechCrunch navigation
 
 3. **Entity type validation** — Some entity type combinations don't make sense:
-   - `[PERSON] --[affiliated_with]--> [PERSON]` is suspicious (should be `works_with` or similar)
-   - `[GPE] --[quoted_by]--> [GPE]` doesn't make sense (locations don't quote each other)
+   - `[ORG] --[affiliated_with]--> [ORG]` where both are navigation elements
+   - `[GPE] --[quoted_by]--> [GPE]` (locations don't quote each other)
+   - Edges where one entity is misclassified (e.g., Zig as GPE)
    
-   **Example from our data:** `[C++] --[mentioned_with]--> [Java]` where C++ is misclassified as PERSON → **Flag for review**
+   **Example from our data:** Edges involving "Zig" (classified as GPE) should be reviewed since it's actually a programming language
 
-4. **Stopword entities** — Common navigation terms should be filtered:
-   - FAQ, API, Apply, Contact, Home, About, Privacy, Terms
-   - These appear frequently but aren't real entities
+4. **Relation type prioritization** — Weight typed relationships higher than co-occurrence:
+   - `affiliated_with`, `quoted_by`, `accused_of`, `responded_to` → Higher confidence
+   - `mentioned_with` with weight < 3 → Lower confidence, flag for review
    
-   **Impact:** Would eliminate ~50 spurious edges from our current graph
+   **Impact:** Of our 3,900 edges, prioritizing the 514 typed relationships (13.2%) would surface more meaningful connections
 
 **What this misses:** 
-- A genuinely new story might be single-source for hours (tradeoff between freshness and reliability)
-- Domain-specific jargon might look like stopwords but be meaningful (e.g., "API" in a technical discussion)
-- Low-weight edges from authoritative sources might be more valuable than high-weight edges from spam
+- A genuinely breaking story might be single-source initially (tradeoff between freshness and reliability)
+- Domain-specific jargon might look like noise but be meaningful (e.g., "LLM" is legitimate despite being an acronym)
+- Low-weight edges from authoritative sources (BBC, TechCrunch) might be more valuable than high-weight edges from spam
+- Some navigation chrome might actually be relevant (e.g., "AI" category pages on TechCrunch)
+
+**Current state:** With 5,691 edge-to-source provenance links, we can trace every edge back to verify if it's legitimate or noise.
 
 ### SQLite → Neo4j: what gets easier and what do you lose?
 
