@@ -136,8 +136,6 @@ sources:
     type: "forum"
 ```
 
-> **Never hardcode URLs in Python files.** All seed URLs live here. The evaluator will swap this file and re-run.
-
 ---
 
 ## Database Schema
