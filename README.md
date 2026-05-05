@@ -254,7 +254,7 @@ Co-occurrence is the fallback only. We attempt typed extraction first using spaC
 
 ---
 
-## The Hard Questions (Phase 4)
+## The Hard Questions 
 
 ### A real relationship your system extracted — is it correct?
 
