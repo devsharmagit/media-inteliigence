@@ -254,9 +254,6 @@ The same real-world entity appears in many forms across sources. We resolve them
 
 Co-occurrence is the fallback only. We attempt typed extraction first using spaCy's Named Entity Recognition (NER) combined with analyzing the text between entity spans for specific verb triggers. 
 
-**Future Improvement (Advanced Extraction):** 
-While regex and string-matching between entities are effective baselines, a more robust relation extractor would use spaCy's dependency parser tree (by using `token.dep_` and `token.head`). This would allow the code to explicitly map the `Subject -> Verb -> Object` structure computationally rather than just looking at the raw sequence of strings between two entities. This avoids false positives when entities are separated by complex clauses.
-
 ---
 
 ## The Hard Questions (Phase 4)
@@ -273,6 +270,12 @@ The system extracted `[Ukraine] --[affiliated_with]--> [Zelenskyy]` from a Reddi
 - `[Ukraine] --[affiliated_with]--> [EU]` (weight: 2) — Correct, from multiple posts about Ukraine's EU accession
 - `[Windows] --[mentioned_with]--> [Linux]` (weight: 16) — Correct co-occurrence from Hacker News discussions comparing operating systems
 - `[Haskell] --[quoted_by]--> [Java]` (weight: 1) — Detected from a discussion where someone quoted a comparison
+
+**Example of incorrect typed relationship:**
+
+The system extracted `[macOS] --[affiliated_with]--> [AI]` (weight: 4). This is **wrong**. An operating system cannot be "affiliated with" a concept. This happened because our `affiliated_with` pattern triggered on text like "macOS AI features" where "AI" appears near "macOS" with certain connecting words, but the pattern doesn't validate semantic plausibility. The correct relation should be `mentioned_with`.
+
+This reveals a fundamental limitation: our typed extraction uses syntactic patterns (verb triggers between entity spans) without semantic validation. We detect "X [title/verb] Y" structures, but don't verify whether that relationship type makes sense for the entity types involved.
 
 **Edge provenance:** Every edge links back to its source content via the `edge_sources` table, allowing verification of extraction accuracy.
 
@@ -299,11 +302,24 @@ The entity "Apple" appeared 49 times and was correctly identified as an organiza
 2. Implement domain-specific NER training for tech entities
 3. Add post-processing rules: if entity matches `^[A-Z][a-z]*\+\+$`, classify as TECHNOLOGY
 
+**Additional failure modes discovered in production:**
+
+- **Markdown artifacts**: `"| hacker_homie"` was extracted as an entity name because HN comments use pipe characters for formatting, and spaCy's NER doesn't filter markup characters
+- **Merged entities**: `"Bun/Anthropic"` appears as a single node when it should be two separate entities. This happens when entities are mentioned together with a slash in context like "Bun (by Anthropic)" or comparison lists
+- **Measurement units as entities**: `"GB"` (gigabytes) was classified as a GPE (geopolitical entity) because it's capitalized and appears in contexts like "16GB RAM" where spaCy's statistical model misclassifies it
+- **Domain-specific acronyms**: `"TLDR"`, `"FIRE"`, `"RSU"` appear as entity nodes but carry no semantic value. These are community jargon (HN, Reddit finance discussions) that pass entity extraction but shouldn't be graph nodes
+
+**What would fix this:** A post-processing entity filter that:
+1. Strips leading non-alphanumeric characters (`"| hacker_homie"` → `"hacker_homie"`)
+2. Splits slash-separated entities (`"Bun/Anthropic"` → two nodes)
+3. Maintains a stoplist of measurement units and common acronyms
+4. Validates entity type makes sense (e.g., reject ORG entities that are single letters/numbers)
+
 ### How would you detect and suppress spurious edges at scale?
 
 **Real examples from our crawl:**
 
-The most common edge in our graph is `[FAQ] --[mentioned_with]--> [API]` (weight: 18). This appears because Hacker News pages contain navigation elements with "FAQ," "API," "Apply," and "Contact" links. These aren't real relationships — they're website chrome.
+The most common edge in our graph is `[FAQ] --[mentioned_with]--> [API]` (weight: 38). Note: weights increase with each crawl run; this reflects cumulative counts across multiple pipeline executions. This appears because Hacker News pages contain navigation elements with "FAQ," "API," "Apply," and "Contact" links. These aren't real relationships — they're website chrome. This weight grew from 18 to 38 across two pipeline runs, demonstrating that navigation chrome accumulates faster than real content relationships.
 
 **The problem:** Co-occurrence edges dominate numerically. Out of 729 edges:
 - ~90% are `mentioned_with` (co-occurrence fallback)
