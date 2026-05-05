@@ -1,18 +1,3 @@
-"""
-crawler/scraper.py
-
-Multi-source web crawler built on crawl4ai.
-
-Reads ALL configuration from config/sources.yaml — never hardcodes URLs.
-Supports:
-  - news      : Reuters (HTML pages)
-  - social    : Reddit  (JSON API)
-  - forum     : Hacker News (HTML)
-
-Depth-limited BFS crawl per source. Domain-whitelist enforced so we never
-follow links outside allowed domains.
-"""
-
 from __future__ import annotations
 
 import asyncio

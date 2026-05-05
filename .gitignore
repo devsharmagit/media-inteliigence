@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+media_intelligence.db
+
+# macOS specific
+.DS_Store
+
+# VS Code specific
+.vscode/
+
+# Crawl/Extract temporary data or logs if any
+*.log

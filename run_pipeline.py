@@ -1,17 +1,3 @@
-"""
-run_pipeline.py
-
-Main entry point for the Media Intelligence Pipeline.
-
-Phases wired up here:
-    Phase 1  — Crawl + Normalise
-    Phase 2  — Entity extraction + DB storage          (TODO: Phase 2)
-    Phase 3  — API server is started separately via uvicorn  (see README)
-
-Usage:
-    python run_pipeline.py
-"""
-
 from __future__ import annotations
 
 import logging
@@ -53,20 +39,114 @@ def phase1_crawl_and_normalise() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — Extract & Store  (stub — implemented in Phase 2)
+# Phase 2 — Extract & Store
 # ---------------------------------------------------------------------------
 
 def phase2_extract_and_store(items: list[dict]) -> None:
     """
     Extract entities + relationships from normalised items and store in SQLite.
-    Implemented in Phase 2.
+    
+    For each content item:
+      1. Insert content -> get content_id
+      2. Extract entities -> normalise -> upsert nodes
+      3. Extract relations -> upsert edges
+      4. Link edges to content (provenance)
     """
-    logger.info("=== PHASE 2: Extract & Store (not yet implemented) ===")
-    # TODO Phase 2a: storage.db.insert_content(item) for each item
-    # TODO Phase 2b: extractor.entities.extract_entities(item)
-    # TODO Phase 2c: extractor.aliases.resolve_alias(name)
-    # TODO Phase 2d: extractor.relationships.extract_relations(doc, entities)
-    # TODO Phase 2e: storage.db.upsert_node / upsert_edge / link_edge_to_source
+    from storage.db import init_db, insert_content, upsert_node, upsert_edge, link_edge_to_source, get_all_nodes
+    from extractor.entities import extract_entities, normalise_entity
+    from extractor.relationships import extract_relations
+    
+    logger.info("=== PHASE 2: Extract & Store ===")
+    
+    # Initialize database
+    logger.info("Initializing database …")
+    init_db()
+    
+    # Track statistics
+    stats = {
+        "content_inserted": 0,
+        "entities_extracted": 0,
+        "nodes_created": 0,
+        "relations_extracted": 0,
+        "edges_created": 0,
+    }
+    
+    # Get existing nodes for fuzzy matching
+    known_nodes = [node["name"] for node in get_all_nodes()]
+    
+    for idx, item in enumerate(items, 1):
+        logger.info("Processing item %d/%d: %s", idx, len(items), item.get("source_url", "?"))
+        
+        try:
+            # Step 1: Insert content
+            content_id = insert_content(item)
+            stats["content_inserted"] += 1
+            
+            # Step 2: Extract and normalise entities
+            raw_entities = extract_entities(item)
+            stats["entities_extracted"] += len(raw_entities)
+            
+            # Normalise entity names and upsert nodes
+            entity_map = {}  # raw_name -> (node_id, canonical_name)
+            
+            for ent in raw_entities:
+                raw_name = ent["name"]
+                ent_type = ent["type"]
+                
+                # Normalise the entity name
+                canonical_name = normalise_entity(raw_name, ent_type, known_nodes)
+                
+                # Upsert node
+                node_id = upsert_node(canonical_name, ent_type)
+                entity_map[raw_name] = (node_id, canonical_name)
+                
+                # Add to known nodes for future fuzzy matching
+                if canonical_name not in known_nodes:
+                    known_nodes.append(canonical_name)
+                    stats["nodes_created"] += 1
+            
+            # Step 3: Extract relationships
+            relations = extract_relations(item, raw_entities)
+            stats["relations_extracted"] += len(relations)
+            
+            # Step 4: Upsert edges and link to content
+            for rel in relations:
+                source_name = rel["source"]
+                target_name = rel["target"]
+                relation_type = rel["relation"]
+                
+                # Look up node IDs (use canonical names)
+                source_info = entity_map.get(source_name)
+                target_info = entity_map.get(target_name)
+                
+                if not source_info or not target_info:
+                    logger.debug(
+                        "Skipping relation (entity not in map): %s -[%s]-> %s",
+                        source_name, relation_type, target_name
+                    )
+                    continue
+                
+                source_node_id = source_info[0]
+                target_node_id = target_info[0]
+                
+                # Upsert edge
+                edge_id = upsert_edge(source_node_id, target_node_id, relation_type)
+                
+                # Link edge to content (provenance)
+                link_edge_to_source(edge_id, content_id)
+                stats["edges_created"] += 1
+        
+        except Exception as exc:
+            logger.error("Failed to process item %d (%s): %s", idx, item.get("source_url"), exc)
+            continue
+    
+    # Log summary
+    logger.info("=== Phase 2 Complete ===")
+    logger.info("  Content inserted:      %d", stats["content_inserted"])
+    logger.info("  Entities extracted:    %d", stats["entities_extracted"])
+    logger.info("  Unique nodes created:  %d", stats["nodes_created"])
+    logger.info("  Relations extracted:   %d", stats["relations_extracted"])
+    logger.info("  Edges created/updated: %d", stats["edges_created"])
 
 
 # ---------------------------------------------------------------------------

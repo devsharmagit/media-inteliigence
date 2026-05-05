@@ -1,24 +1,3 @@
-"""
-crawler/normaliser.py
-
-Converts raw page dicts produced by scraper.py into a common schema:
-
-    {
-        "source_url":   str,
-        "source_type":  str,          # "news" | "social" | "forum"
-        "scraped_at":   str,          # ISO-8601 UTC
-        "title":        str | None,
-        "body":         str | None,
-        "author":       str | None,
-        "published_at": str | None,   # ISO-8601 UTC when known
-    }
-
-Rules:
-- Missing fields are always None — never empty strings, never KeyError crashes.
-- Each source type has its own normaliser function.
-- The public entry point is `normalise(raw_pages)` which dispatches by source_type.
-"""
-
 from __future__ import annotations
 
 import logging
