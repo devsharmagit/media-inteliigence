@@ -24,6 +24,12 @@ except OSError:
 # Entity types we care about
 _VALID_ENTITY_TYPES = {"PERSON", "ORG", "GPE"}
 
+# Stopwords to filter out (common false positive entities in web content)
+_STOPWORD_ENTITIES = {
+    "faq", "api", "apply", "contact", "home", "about", 
+    "privacy", "terms", "login", "signup", "help", "search"
+}
+
 # Fuzzy match threshold (0-100)
 _FUZZY_THRESHOLD = 90
 
@@ -53,8 +59,13 @@ def extract_entities(content: dict) -> list[dict]:
     
     for ent in doc.ents:
         if ent.label_ in _VALID_ENTITY_TYPES:
+            clean_name = ent.text.strip()
+            # Filter out common UI stopword entities
+            if clean_name.lower() in _STOPWORD_ENTITIES:
+                continue
+                
             entities.append({
-                "name": ent.text.strip(),
+                "name": clean_name,
                 "type": ent.label_,
             })
     
